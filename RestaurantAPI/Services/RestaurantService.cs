@@ -1,4 +1,5 @@
-﻿using AutoMapper;
+﻿using System;
+using AutoMapper;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
@@ -8,7 +9,9 @@ using RestaurantAPI.Exceptions;
 using RestaurantAPI.Models;
 using System.Collections.Generic;
 using System.Linq;
+using System.Linq.Expressions;
 using System.Security.Claims;
+using Microsoft.AspNetCore.Mvc;
 
 namespace RestaurantAPI.Services
 {
@@ -16,7 +19,7 @@ namespace RestaurantAPI.Services
     {
         int Create(CreateRestaurantDto dto, int userId);
         void Delete(int id, ClaimsPrincipal user);
-        IEnumerable<RestaurantDto> GetAll(string searchPhrase);
+        PagedResult<RestaurantDto> GetAll(RestaurantQuery query);
         RestaurantDto GetById(int id);
         void Update(int id, UpdateRestaurantDto dto, ClaimsPrincipal user);
     }
@@ -89,18 +92,44 @@ namespace RestaurantAPI.Services
             return result;
         }
 
-        public IEnumerable<RestaurantDto> GetAll(string searchPhrase)
+        public PagedResult<RestaurantDto> GetAll([FromQuery]RestaurantQuery query)
         {
-            var restaurants = _dbContext
+            var baseQuery = _dbContext
                 .Restaurants
                 .Include(r => r.Address)
                 .Include(r => r.Dishes)
-                .Where(r => searchPhrase != null || (r.Name.ToLower().Contains(searchPhrase.ToLower()) ||
-                            r.Description.ToLower().Contains(searchPhrase.ToLower())))
+                .Where(r => query.SearchPhrase != null || (r.Name.ToLower().Contains(query.SearchPhrase.ToLower()) ||
+                                                           r.Description.ToLower()
+                                                               .Contains(query.SearchPhrase.ToLower())));
+
+            if (!string.IsNullOrEmpty(query.SortBy))
+            {
+                var columnsSelector = new Dictionary<string, Expression<Func<Restaurant, object>>>
+                {
+                    {nameof(Restaurant.Name), r => r.Name},
+                    {nameof(Restaurant.Category), r => r.Category},
+                    {nameof(Restaurant.Description), r => r.Description}
+                };
+
+                var selectedColumn = columnsSelector[query.SortBy];
+
+                baseQuery = query.SortDirection == SortDirection.ASC
+                    ? baseQuery.OrderBy(selectedColumn)
+                    : baseQuery.OrderByDescending(selectedColumn);
+            }
+
+            var restaurants = baseQuery
+                .Skip(query.PageSize * (query.PageNumber-1))
+                .Take(query.PageSize)
                 .ToList();
 
+            var totalItemsCount = baseQuery.Count();
+
             var restaurantDtos = _mapper.Map<List<RestaurantDto>>(restaurants);
-            return restaurantDtos;
+
+            var result = new PagedResult<RestaurantDto>(restaurantDtos, totalItemsCount, query.PageSize, query.PageNumber);
+
+            return result;
         }
 
         public int Create(CreateRestaurantDto dto, int userId)
